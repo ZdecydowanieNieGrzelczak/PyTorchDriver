@@ -1,10 +1,7 @@
 import torch
-import math
-import numpy as np
 from torch import nn
 from torch import optim
 
-import torch.multiprocessing as mp
 
 
 
@@ -57,7 +54,6 @@ class ActorCritic(nn.Module):
         )
 
         model = model.to(self.device)
-        # model = model.cuda()
 
         adam = optim.Adam(model.parameters(), lr=self.critic_lr)
 

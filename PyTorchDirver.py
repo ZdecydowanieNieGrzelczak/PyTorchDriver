@@ -7,13 +7,11 @@ import multiprocessing as mp
 import torch.optim
 from torch.nn import functional as F
 from Memory import Memory, Sample
-import time
 import os
 from Map import Game, Scribe
 
 import logging
 
-logging.basicConfig(level=logging.DEBUG, format=' %(asctime)s - %(message)s')
 
 
 def encode_state(state):
@@ -66,18 +64,11 @@ def act(state):
 
     encoded_state = encoded_state.to(GPU_DEVICE)
     policy = MasterBrain.actor_model(encoded_state)
-    # try:
-    # action = np.random.choice(np.array([i for i in range(action_count)]), p=policy.to(cpu).data.numpy())
     logits = policy.view(-1)
     action_dist = torch.distributions.Categorical(logits=logits)
-    # rand = np.random.randint(0, 100)
-    # # print(rand)
-    # if rand < 1:
-    #     print(action_dist.probs.view(-1).data)
+
     action = action_dist.sample().cpu().view(-1).numpy()[0]
-    # except ValueError:
-    #     print("policy:", policy)
-    #     print("policy.data:", policy.to(cpu).data.numpy())
+
     return policy, action
 
 
@@ -99,7 +90,6 @@ def run_episode(should_replay=True):
         memory.append((state, action, reward, next_state, is_done))
 
         state = next_state
-        # state = torch.from_numpy(encode_state(next_state)).float()
         if is_done:
             steps = i + 1
             break
@@ -115,13 +105,11 @@ def run_episode(should_replay=True):
 
 
 def learn():
-    start = time.time()
     batch = memory.sample_batch(master_params["BATCH_SIZE"])
     rewards, states, advantages, critic_values, actor_probs = [], [], [], [], []
     for i, sample in enumerate(batch):
         state, action, reward, next_state, is_done = sample
 
-        # state = encode_state(state)
 
         # tensor_state = torch.from_numpy(encode_state(state)).float()
         tensor_state = torch.from_numpy(state).float()
@@ -136,43 +124,26 @@ def learn():
         if not is_done:
             future_state = MasterBrain.target_critic(torch.from_numpy(next_state).float().to(GPU_DEVICE)).cpu().data.numpy()[0]
             # future_state = MasterBrain.target_critic(torch.from_numpy(encode_state(next_state)).float().to(GPU_DEVICE))
-            # print(future_state)
-            # future_state = MasterBrain.target_critic(torch.from_numpy(encode_state(next_state)).float().to(GPU_DEVICE)).cpu().data.numpy()[0]
             reward = reward + future_state * master_params["discount"]
 
-            # print(future_state)
-        # print(critic_value)
         rewards.append(reward)
         states.append(state)
         critic_values.append(critic_value)
         actor_probs.append(probs)
-        # print(critic_values[-1])
 
 
     actor_probs = torch.stack(actor_probs).flip(dims=(0, )).view(-1)
-
     critic_values = torch.stack(critic_values).flip(dims=(0, )).view(-1)
-
-    # print(critic_values)
 
     # noinspection PyArgumentList
     rewards = torch.Tensor(rewards).flip(dims=(0, )).view(-1)
 
     # rewards = F.normalize(rewards, dim=0)
 
-    # print("rewards", torch.mean(rewards))
-    # print("critic_values", torch.mean(critic_values))
 
     advantages = rewards - critic_values.detach().cpu()
     actor_loss = loss_fn(actor_probs, advantages)
-    # critic_loss = torch.abs(critic_values - rewards.to(GPU_DEVICE))
-    # critic_loss = torch.abs(rewards.to(GPU_DEVICE) - critic_values)
-    # critic_loss = torch.pow(critic_values, 2)
-    # critic_loss = torch.pow(critic_values - rewards.to(GPU_DEVICE), 2)
     critic_loss = torch.pow(rewards.to(GPU_DEVICE) - critic_values, 2)
-    # critic_loss = torch.pow(critic_values , 2)
-    # critic_loss = torch.zeros(len(rewards), dtype=torch.double, device=GPU_DEVICE)
-    # critic_loss = c_loss(critic_values - rewards.to(GPU_DEVICE), critic_loss)
     critic_loss = critic_loss.sum()
 
 
@@ -215,9 +186,8 @@ def plot_and_save(filename, sliding_window_enhancer):
     PLT.savefig("Graphs\\" + filename)
 
 
-
 if torch.cuda.is_available():
-    GPU_DEVICE = torch.device("cuda:0")  # you can continue going on here, like cuda:1 cuda:2....etc.
+    GPU_DEVICE = torch.device("cuda:0")
     logging.debug("Running on the GPU")
 else:
     GPU_DEVICE = torch.device("cpu")
@@ -229,7 +199,7 @@ else:
 env = gym.make("CartPole-v0")
 # env = gym.make("Acrobot-v1")
 
-
+logging.basicConfig(level=logging.DEBUG, format=' %(asctime)s - %(message)s')
 
 losses = []
 reward_buffer = []
@@ -257,8 +227,6 @@ memory = Memory(200000)
 # observation_count = 37
 # action_count = env.action_count
 
-print(env.action_space)
-print(env.observation_space)
 
 observation_count = 4
 
@@ -327,7 +295,6 @@ sliding_window_enhancer = 0
 for i in range(1, master_params['EPOCHS']):
     reward = run_episode()
     torch.cuda.empty_cache()
-    # if i % 100 == 0:
     logging.debug("".join(["episode ", str(i), " Reward: ", str(reward)]))
     # logging.debug(env.scribe)
 
@@ -338,18 +305,6 @@ for i in range(1, master_params['EPOCHS']):
         save_to_file()
         plot_and_save("Graphs_iter_" + str(i) + ".png", sliding_window_enhancer)
 
-
-
-
-
-
-
-
-
-
-# plot_axis(line1, total_rewards, ax1)
-# plot_axis(line2, total_steps, ax2)
-# plot_axis(line3, losses, ax3)
 
 PLT.savefig("result.png")
 
