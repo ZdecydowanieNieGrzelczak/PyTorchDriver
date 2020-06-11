@@ -1,6 +1,8 @@
+import sys
+
 import torch
 import gym
-from A2C import ActorCritic
+from A2C import ActorCritic, StateOracle
 import numpy as np
 from matplotlib import pyplot as PLT
 import multiprocessing as mp
@@ -9,10 +11,51 @@ from torch.nn import functional as F
 from Memory import Memory, Sample
 import os
 from Map import Game, Scribe
+from ConvEnv import ConvEnv, Scribe
+import json
+import pickle
+from torch.nn.utils.rnn import pad_sequence
 
 import logging
+logging.basicConfig(level=logging.DEBUG, format=' %(asctime)s - %(message)s')
+
+def create_config_dict():
+    config = {}
+    learning = {}
+    environment = {}
+    learning["discount"] = master_params["discount"]
+    learning["batch size"] = master_params["BATCH_SIZE"]
+    learning["actor learning rate"] = master_params["actor_lr"]
+    learning["critic learning rate"] = master_params["critic_lr"]
+    learning["actor shapes"] = MasterBrain.actor_shapes[0]
+    learning["critic shapes"] = MasterBrain.critic_shapes[0]
+    learning["memory"] = {"size": memory.size, "prioritized": memory.is_prioritized}
+    learning["is_cargo_in"] = env.observation_space != (env.width * env.height + 2)
+
+    environment["stations"] = {"nr": env.station_nr, "uniform": env.uniform_gas_stations}
+    environment["quest"] = {"nr": env.station_nr, "prepaid": env.prepaid, "reward per step": env.reward_per_step}
+    environment["step penalty"] = -env.gas_price
+    environment["death penalty"] = -env.death_reward
+    environment["gas"] = {"start": env.start_gas, "end": env.gas_max}
+    environment["size"] = {"width": env.width, "height": env.height}
+    environment["codes"] = {"player": env.player_code, "station": env.station_code, "quest": env.quest_code, "reward": env.reward_code}
+    environment["normalized rewards"] = env.normalize_reward
+    if env.normalize_reward:
+        environment["reward normalizer"] = env.reward_normalizer
 
 
+    config["learning"] = learning
+    config["environment"] = environment
+
+    with open('Graphs\\config.json', 'w') as fp:
+        json.dump(config, fp)
+
+
+def to_oracle_input(tensor_state, action):
+    actions = np.zeros(shape=action_count)
+    actions[action] = 1
+    tensor_actions = torch.from_numpy(actions).float().to(GPU_DEVICE)
+    return torch.cat((tensor_state, tensor_actions), dim=0)
 
 def encode_state(state):
     map_size = 15
@@ -34,9 +77,13 @@ def encode_state(state):
 
 
 def init_memory(nr_of_runs):
-    for i in range(nr_of_runs):
-        run_episode(False)
-
+    env.reset()
+    i = 0
+    while i < nr_of_runs:
+        is_done = env.random_move()
+        if is_done:
+            i += 1
+            env.reset()
 
 def sliding_window(buffer, window_size=25):
     new_buffer = []
@@ -46,6 +93,7 @@ def sliding_window(buffer, window_size=25):
 
 
 def loss_fn(preds, r):
+    # return torch.sum(r * preds.cpu())
     return -1 * torch.sum(r * preds.cpu())
 
 
@@ -59,6 +107,10 @@ def plot_axis(line, data, ax):
 
 
 def act(state):
+    if exploration_dict["FORCED_EXPLORATION"]:
+        if exploration_dict["currently_exploring"]:
+            if np.random.random() <= current_epsilon:
+                return env.sample_move()
     encoded_state = torch.from_numpy(state).float()
     # encoded_state = torch.from_numpy(encode_state(state)).float()
 
@@ -67,21 +119,21 @@ def act(state):
     logits = policy.view(-1)
     action_dist = torch.distributions.Categorical(logits=logits)
 
+    # print(action_dist.probs.data)
+
     action = action_dist.sample().cpu().view(-1).numpy()[0]
 
-    return policy, action
+    return action
 
 
-def run_episode(should_replay=True):
+def run_episode():
     state = env.reset()
-    values, probs, rewards = [], [], []
     total_rewards = 0
     steps = master_params["MAX_STEPS"]
 
     for i in range(master_params["MAX_STEPS"]):
         # env.render()
-        policy, action = act(state)
-        probs.append(policy[action])
+        action = act(state)
         next_state, reward, is_done, into = env.step(action)
         # if is_done:
         #     reward = -10
@@ -93,20 +145,22 @@ def run_episode(should_replay=True):
         if is_done:
             steps = i + 1
             break
-    if should_replay:
-        learn()
+    learn()
 
-    # env.scribe.set_steps(steps)
-    invalid.append(0)
-    # invalid.append(env.scribe.percentage)
+    env.scribe.set_steps(steps)
+    # invalid.append(0)
+    invalid.append(env.scribe.percentage)
     total_steps.append(steps)
-    reward_buffer.append(total_rewards / steps)
+    reward_buffer.append(total_rewards)
+    # reward_buffer.append(total_rewards / steps)
     return total_rewards
 
 
 def learn():
     batch = memory.sample_batch(master_params["BATCH_SIZE"])
-    rewards, states, advantages, critic_values, actor_probs = [], [], [], [], []
+    rewards, advantages, critic_values, actor_probs = [], [], [], []
+    true_states, oracle_predicts = [], []
+    critic_targetes = []
     for i, sample in enumerate(batch):
         state, action, reward, next_state, is_done = sample
 
@@ -115,38 +169,73 @@ def learn():
         tensor_state = torch.from_numpy(state).float()
         tensor_state = tensor_state.to(GPU_DEVICE)
 
+        tensor_next_state = torch.from_numpy(next_state).float().to(GPU_DEVICE)
 
         probs = MasterBrain.actor_model(tensor_state).view(-1)[action]
 
 
         critic_value = MasterBrain.critic_model(tensor_state)
-        # print(critic_value)
         if not is_done:
-            future_state = MasterBrain.target_critic(torch.from_numpy(next_state).float().to(GPU_DEVICE)).cpu().data.numpy()[0]
+            future_state = MasterBrain.critic_model(tensor_next_state).cpu().data.numpy()[0]
+            target_state = MasterBrain.target_critic(tensor_next_state).detach()
             # future_state = MasterBrain.target_critic(torch.from_numpy(encode_state(next_state)).float().to(GPU_DEVICE))
+            target_state = reward * target_state * master_params["discount"]
             reward = reward + future_state * master_params["discount"]
+        else:
+            target_state = torch.Tensor([reward]).to(GPU_DEVICE)
+
+
+        if curiosity_dict["IS_CURIOUS"]:
+            true_states.append(tensor_next_state)
+            oracle_predicts.append(stateOracle(to_oracle_input(tensor_state, action)))
 
         rewards.append(reward)
-        states.append(state)
         critic_values.append(critic_value)
         actor_probs.append(probs)
+        critic_targetes.append(target_state)
+
+
 
 
     actor_probs = torch.stack(actor_probs).flip(dims=(0, )).view(-1)
+
+
     critic_values = torch.stack(critic_values).flip(dims=(0, )).view(-1)
+    critic_targetes = torch.stack(critic_targetes).flip(dims=(0, )).view(-1)
 
     # noinspection PyArgumentList
     rewards = torch.Tensor(rewards).flip(dims=(0, )).view(-1)
 
-    # rewards = F.normalize(rewards, dim=0)
+
+    if curiosity_dict["IS_CURIOUS"]:
+        oracle_predicts = pad_sequence(oracle_predicts)
+        true_states = pad_sequence(true_states)
+        oracle_losses = o_loss(oracle_predicts, true_states)
+        print("Average oracle bonus = ", torch.mean(oracle_losses).data.cpu())
+        TD_errors.append(torch.mean(oracle_losses).data.cpu())
+        rewards = rewards + oracle_losses.cpu().detach()
+        oracle_loss = torch.sum(oracle_losses)
+        oracle_optim.zero_grad()
+        oracle_loss.backward(retain_graph=True)
+        oracle_optim.step()
 
 
     advantages = rewards - critic_values.detach().cpu()
     actor_loss = loss_fn(actor_probs, advantages)
-    critic_loss = torch.pow(rewards.to(GPU_DEVICE) - critic_values, 2)
-    critic_loss = critic_loss.sum()
+    critic_loss = torch.pow(critic_targetes.detach() - critic_values, 2) # TAK WIKIPEDIA NAWET MOWI
 
 
+    critic_huber_loss = c_loss(critic_values, critic_targetes.detach())
+
+
+    # critic_loss = torch.abs(critic_targetes.detach() - critic_values) # TAK WIKIPEDIA NAWET MOWI
+
+
+    # critic_loss = F.normalize(critic_loss, dim=0)
+
+
+    # critic_loss = critic_loss.sum()
+    critic_loss = critic_huber_loss
 
     MasterBrain.backpropagate_actor(actor_loss)
     MasterBrain.backpropagate_critic(critic_loss)
@@ -154,7 +243,8 @@ def learn():
 
     losses.append(actor_loss.clone().detach())
     crit_losses.append(critic_loss.cpu().detach())
-    TD_errors.append(torch.mean(advantages))
+    if not curiosity_dict["IS_CURIOUS"]:
+        TD_errors.append(torch.mean(advantages))
 
 
 
@@ -167,23 +257,71 @@ def save_to_file():
 
 
 def plot_and_save(filename, sliding_window_enhancer):
-    avr_r = sliding_window(reward_buffer, control_dict["SLIDING_INIT_VALUE"] + sliding_window_enhancer)
-    avr_s = sliding_window(total_steps, control_dict["SLIDING_INIT_VALUE"] + sliding_window_enhancer)
-    avr_l = sliding_window(losses, control_dict["SLIDING_INIT_VALUE"] + sliding_window_enhancer)
-    avr_adv = sliding_window(TD_errors, control_dict["SLIDING_INIT_VALUE"] + sliding_window_enhancer)
-    avr_crit = sliding_window(crit_losses, control_dict["SLIDING_INIT_VALUE"] + sliding_window_enhancer)
-    avr_i = sliding_window(invalid, control_dict["SLIDING_INIT_VALUE"] + sliding_window_enhancer)
+    global last_index
+
+    last_index -= (control_dict["SLIDING_INIT_VALUE"] + sliding_window_enhancer)
+
+    averaged_rewards.extend(sliding_window(reward_buffer[last_index:], control_dict["SLIDING_INIT_VALUE"] + sliding_window_enhancer))
+    averaged_steps.extend(sliding_window(total_steps[last_index:], control_dict["SLIDING_INIT_VALUE"] + sliding_window_enhancer))
+    averaged_loss.extend(sliding_window(losses[last_index:], control_dict["SLIDING_INIT_VALUE"] + sliding_window_enhancer))
+    averaged_advantaged.extend(sliding_window(TD_errors[last_index:], control_dict["SLIDING_INIT_VALUE"] + sliding_window_enhancer))
+    averaged_crit_losses.extend(sliding_window(crit_losses[last_index:], control_dict["SLIDING_INIT_VALUE"] + sliding_window_enhancer))
+    averaged_invalid.extend(sliding_window(invalid[last_index:], control_dict["SLIDING_INIT_VALUE"] + sliding_window_enhancer))
 
 
+    last_index = len(reward_buffer)
 
-    plot_axis(line1, avr_r, ax1)
-    plot_axis(line2, avr_s, ax2)
-    plot_axis(line3, avr_l, ax3)
-    plot_axis(line4, avr_adv, ax4)
-    plot_axis(line5, avr_crit, ax5)
-    plot_axis(line6, avr_i, ax6)
+    plot_axis(line1, averaged_rewards, ax1)
+    plot_axis(line2, averaged_steps, ax2)
+    plot_axis(line3, averaged_loss, ax3)
+    plot_axis(line4, averaged_advantaged, ax4)
+    plot_axis(line5, averaged_crit_losses, ax5)
+    plot_axis(line6, averaged_invalid, ax6)
 
     PLT.savefig("Graphs\\" + filename)
+
+def save_buffers_binary():
+    with open('Graphs\\Rewards.p', 'wb') as fp:
+        pickle.dump(reward_buffer, fp, protocol=pickle.HIGHEST_PROTOCOL)
+    with open('Graphs\\Actor loss.p', 'wb') as fp:
+        pickle.dump(losses, fp, protocol=pickle.HIGHEST_PROTOCOL)
+    with open('Graphs\\Steps.p', 'wb') as fp:
+        pickle.dump(total_steps, fp, protocol=pickle.HIGHEST_PROTOCOL)
+    with open('Graphs\\Advantages.p', 'wb') as fp:
+        pickle.dump(TD_errors, fp, protocol=pickle.HIGHEST_PROTOCOL)
+    with open('Graphs\\Critic losses.p', 'wb') as fp:
+        pickle.dump(crit_losses, fp, protocol=pickle.HIGHEST_PROTOCOL)
+    with open('Graphs\\Invalid.p', 'wb') as fp:
+        pickle.dump(invalid, fp, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+
+def plot_trend(data, window_size=50):
+    trend_analysis = PLT.figure(2)
+    head = data[:window_size]
+    tail = data[-window_size:]
+
+    start_value = np.mean(np.asarray(head))
+    end_value = np.mean(np.asarray(tail))
+
+    step = (end_value - start_value) / (len(data) - window_size)
+
+    trend_data = [start_value + i * step for i in range(window_size // 2, len(data) - (window_size // 2))]
+
+    slided = sliding_window(data, window_size)
+
+    x_data = [i for i in range(window_size // 2, len(data) - (window_size // 2))]
+    x_full = [i for i in range(len(data))]
+
+
+    PLT.plot(x_data, trend_data, label="trend line")
+    PLT.plot(x_data, slided, label="averaged values")
+    # PLT.plot(x_full, data, label="raw data")
+
+    PLT.legend()
+
+    PLT.savefig("Graphs\\" + "trend visualisation.png")
+
 
 
 if torch.cuda.is_available():
@@ -196,10 +334,13 @@ else:
 
 # env = Game()
 # env = gym.make("MountainCar-v0")
-env = gym.make("CartPole-v0")
+# env = gym.make("CartPole-v0")
 # env = gym.make("Acrobot-v1")
 
-logging.basicConfig(level=logging.DEBUG, format=' %(asctime)s - %(message)s')
+
+
+env = ConvEnv(quest_nr=8, station_nr=6, width=15, height=15, uniform_gas_stations=True, normalize_rewards=True)
+
 
 losses = []
 reward_buffer = []
@@ -215,50 +356,93 @@ learning_time = []
 
 MODEL_PATH = os.path.abspath("Models")
 
-c_loss = torch.nn.SmoothL1Loss()
+c_loss = torch.nn.SmoothL1Loss(reduction='sum')
+o_loss = torch.nn.SmoothL1Loss(reduction="none")
 
 cpu = torch.device("cpu")
 
-memory = Memory(200000)
+memory = Memory(400000)
 
 # brain = ActorCritic(4, 2)
 
-# observation_count = env.observation_space
+observation_count = env.observation_space
 # observation_count = 37
+action_count = env.action_count
+
+
+# observation_count = env.observation_space
 # action_count = env.action_count
 
+# observation_count = 4
+# action_count = 2
 
-observation_count = 4
-
-action_count = 2
 
 master_params = {
-    'EPOCHS': 10000,
+    'EPOCHS': 20010,
     'n_workers': 5,
-    "actor_lr": 9e-5,
-    "critic_lr": 9e-4,
-    "BATCH_SIZE": 50,
+    "actor_lr": 2e-5,
+    "critic_lr": 5e-4,
+    "BATCH_SIZE": 600,
     "discount": 0.99,
-    "MAX_STEPS": 1500,
+    "MAX_STEPS": 2500,
 }
 
 
 control_dict = {
-    "RESET_TARGET_EVERY": 25,
-    "SAVE_TO_PATH_EVERY": 50,
+    "RESET_TARGET_EVERY": 35,
+    "SAVE_TO_PATH_EVERY": 2000,
     "ACTOR_PATH": os.path.join(MODEL_PATH, "Actor_model.json"),
     "CRITIC_PATH": os.path.join(MODEL_PATH, "Critic_model.json"),
-    "SLIDING_INIT_VALUE": 20
+    "SLIDING_INIT_VALUE": 1000,
+    "CONTINUE_LEARNING": False,
+    "SLIDING_INCREMENTAL_VALUE": 0,
+    "PLOT_TREND_EVERY": 2000,
+    "TEST_VALUES": False
 }
 
+exploration_dict = {
+    "FORCED_EXPLORATION": True,
+    "EXPLORATION_TIME": 500,
+    "EXPLOITATION_TME": 500,
+    "STARTING_EPSILON": 0.9,
+    "ENDING EPSILONE": 0.0001,
+    "currently_exploring": True,
+}
+
+
+curiosity_dict = {
+    "IS_CURIOUS": True,
+    "oracle_lr": 5e-4,
+}
+
+current_epsilon = exploration_dict["STARTING_EPSILON"]
 
 MasterBrain = ActorCritic(observation_count, action_count, GPU_DEVICE, actor_lr=master_params["actor_lr"],
                           critic_lr=master_params["critic_lr"])
 
-init_memory(3)
+
+stateOracle = StateOracle(observation_count, action_count).to(GPU_DEVICE)
 
 
-fig = PLT.figure()
+oracle_optim = torch.optim.Adam(params=stateOracle.parameters(), lr=curiosity_dict["oracle_lr"])
+
+
+if control_dict["CONTINUE_LEARNING"]:
+    MasterBrain.actor_model.load_state_dict(torch.load(control_dict["ACTOR_PATH"]))
+    MasterBrain.actor_model.eval()
+    MasterBrain.critic_model.load_state_dict(torch.load(control_dict["CRITIC_PATH"]))
+    MasterBrain.critic_model.eval()
+    MasterBrain.update_target()
+    logging.debug("LOADED VALUES")
+
+
+init_memory(25)
+
+
+fig = PLT.figure(1)
+
+
+
 ax1 = fig.add_subplot(231)
 ax2 = fig.add_subplot(232)
 ax3 = fig.add_subplot(233)
@@ -271,14 +455,18 @@ PLT.ion()
 
 labels = ["Rewards", "Steps", "Actor loss", "Advantages", "Critic loss", "Invalid"]
 
-averaged_rewards = sliding_window(reward_buffer)
-averaged_steps = sliding_window(total_steps)
-averaged_loss = sliding_window(losses)
+averaged_rewards = []
+averaged_steps = []
+averaged_loss = []
+averaged_advantaged = []
+averaged_crit_losses = []
+averaged_invalid = []
 
+last_index = (control_dict["SLIDING_INIT_VALUE"] + control_dict["SLIDING_INCREMENTAL_VALUE"])
 
-line1, = ax1.plot(averaged_rewards, label=labels[0])
-line2, = ax2.plot(averaged_steps, label=labels[1])
-line3, = ax3.plot(averaged_loss, label=labels[2])
+line1, = ax1.plot(reward_buffer, label=labels[0])
+line2, = ax2.plot(total_steps, label=labels[1])
+line3, = ax3.plot(losses, label=labels[2])
 line4, = ax4.plot(TD_errors, label=labels[3])
 line5, = ax5.plot(crit_losses, label=labels[4])
 line6, = ax6.plot(invalid, label=labels[5])
@@ -292,19 +480,59 @@ ax6.legend()
 
 sliding_window_enhancer = 0
 
+
+if control_dict["TEST_VALUES"]:
+    MasterBrain.critic_model.load_state_dict(torch.load(control_dict["CRITIC_PATH"]))
+    MasterBrain.critic_model.eval()
+    logging.debug("LOADED CRITIC VALUES")
+    state = env.reset()
+    # state[-2] = 0.000000001
+    # state[-1] = 1
+    values = np.zeros(shape=(env.width, env.height))
+    for i in range(env.width):
+        for j in range(env.height):
+            previous = state[j + i * env.height]
+            state[j + i * env.height] = env.player_code / 255
+            # print(state[:-2].reshape(env.width, env.height))
+            # print("")
+            # print(j + i * env.height)
+            logs = MasterBrain.actor_model(torch.from_numpy(state).float().to(GPU_DEVICE)).cpu().data
+            action_dist = torch.distributions.Categorical(logits=logs)
+
+            values[j][i] = np.argmax(action_dist.probs.data.numpy())
+
+            # values[j][i] = MasterBrain.critic_model(torch.from_numpy(state).float().to(GPU_DEVICE)).cpu().data.numpy()
+            state[j + i * env.height] = previous
+    print(state[:-2].reshape(env.width, env.height))
+    print(values)
+    sys.exit()
+
+
+create_config_dict()
+
 for i in range(1, master_params['EPOCHS']):
     reward = run_episode()
     torch.cuda.empty_cache()
     logging.debug("".join(["episode ", str(i), " Reward: ", str(reward)]))
-    # logging.debug(env.scribe)
+    if exploration_dict["FORCED_EXPLORATION"]:
+        if exploration_dict["currently_exploring"]:
+            logging.debug("Exploring with probability: " + str(current_epsilon))
+    logging.debug(env.scribe)
 
     if i % control_dict["RESET_TARGET_EVERY"] == 0:
         MasterBrain.update_target()
     if i % control_dict["SAVE_TO_PATH_EVERY"] == 0:
-        sliding_window_enhancer += 5
+        sliding_window_enhancer += control_dict["SLIDING_INCREMENTAL_VALUE"]
         save_to_file()
         plot_and_save("Graphs_iter_" + str(i) + ".png", sliding_window_enhancer)
+    if exploration_dict["FORCED_EXPLORATION"]:
+        current_epsilon = (exploration_dict["STARTING_EPSILON"] - exploration_dict["ENDING EPSILONE"]) / \
+                          exploration_dict["EXPLORATION_TIME"] * \
+            (exploration_dict["EXPLORATION_TIME"] - (i % exploration_dict["EXPLOITATION_TME"]))
 
+        if i % exploration_dict["EXPLOITATION_TME"] == 0:
+            exploration_dict["currently_exploring"] = not exploration_dict["currently_exploring"]
 
 PLT.savefig("result.png")
-
+plot_trend(reward_buffer)
+save_buffers_binary()

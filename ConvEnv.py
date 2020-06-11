@@ -1,14 +1,15 @@
+import math
 import random, time
 import numpy as np
 from math import trunc
-
+import copy
 
 class Scribe:
 
     def __init__(self, nr_of_quests, nr_of_stations, nr_of_locations, is_total=False):
         self.picked = np.zeros(shape=nr_of_quests)
         self.ended = np.zeros(shape=nr_of_quests)
-        self.tanked = np.zeros(shape=nr_of_stations)
+        self.tanked = 0
         self.mobility = np.zeros(shape=nr_of_locations)
         self.died = np.zeros(shape=nr_of_locations)
         self.is_total = is_total
@@ -23,7 +24,7 @@ class Scribe:
             representation = "During run:\n"
         picked = "Picked: {0:.0f} Q1: {p[0]:.0f} Q2: {p[1]:.0f} Q3: {p[2]:.0f} Q4: {p[3]:.0f} Q5: {p[4]:.0f}\n".format(np.sum(self.picked), p=self.picked)
         ended = "Ended:  {0:.0f} Q1: {p[0]:.0f} Q2: {p[1]:.0f} Q3: {p[2]:.0f} Q4: {p[3]:.0f} Q5: {p[4]:.0f}\n".format(np.sum(self.ended), p=self.ended)
-        tanked = "Tanked: {0:.0f} LP1: {p[0]:.0f} LP2: {p[1]:.0f} LP3: {p[2]:.0f}\n".format(np.sum(self.tanked), p=self.tanked)
+        tanked = "Tanked: {0:.0f} \n".format(self.tanked)
         if self.steps == 0:
             invalid = "Invalid actions taken: {0}\n".format(self.invalid_action)
         else:
@@ -46,85 +47,98 @@ class Scribe:
 
 
 
-class Game:
+class ConvEnv:
 
     wait_discount = 1
-    gas_max = 300
+    gas_max = 200
     map_size = 15
-    prepaid = 0.25
-    gas_price = 1
-    reward_per_step = 8
-    large_quest_bonus = 1.03
+    prepaid = 0.0
+    gas_price = 0.006
+    reward_per_step = 15
+    large_quest_bonus = 1.07
     random_deviation = 0.2
-    quest_multiplier = 3
+    quest_multiplier = 1
+    reward = 0
+    start_gas = 200
+    death_reward = 15
+    start_money = 500
+    is_done = False
+    action_space = (0, 1, 2, 3)
+    reward_normalizer = 128
 
-    def __init__(self, reward_normalizer=600, random_map=False, quest_nr=5, station_nr=3):
+
+    station_code = 50
+    quest_code = 100
+    reward_code = 180
+    player_code = 255
+
+    def __init__(self, quest_nr=5, station_nr=3, width=15, height=15, uniform_gas_stations=False, normalize_rewards=False):
+        self.width = width
+        self.height = height
         self.quest_nr = quest_nr
         self.station_nr = station_nr
-        self.reward_normalizer = reward_normalizer
+        self.gas = self.start_gas
+        self.normalize_reward = normalize_rewards
+        self.money = self.start_money
+        self.uniform_gas_stations = uniform_gas_stations
+        self.observation_space = self.width * self.height + quest_nr + 2
+        # self.observation_space = self.width * self.height + 2
+        self.cargo = [0 for i in range(quest_nr)]
+        self.rewards = [0 for i in range(quest_nr)]
+
+        self.uniform_gas_list = [ [int(width / 2), int(height / 2)], [int(width / 4), int(height / 2)],
+                                  [int(width / 2) + 2, int(height / 4 * 3)], [int(width / 8), int(height / 3 + 1)],
+                                  [int(width / 5 * 4), int(height / 5 * 3)], [int(width / 4 * 3), int(height / 5 * 3)]]
+
         random.seed(time.time())
-        self.gas = 150
-        self.money = 400
-        self.map = []
-        self.player_pos = [random.randint(0, self.map_size - 1), random.randint(0, self.map_size - 1)]
-        self.is_done = False
-        self.reward = 0
-        if not random_map:
-            self.quests = [[12, 6], [0, 2], [11, 11], [5, 4], [4, 13]]
-            self.destinations = [[6, 7], [2, 5], [13, 2], [5, 10], [2, 2]]
-            self.rewards = [300, 200, 400, 250, 500]
-            self.gas_stations = [[7, 7], [0, 5], [10, 6]]
-            self.cargo= [0, 0, 0, 0]
-        else:
-            self.set_random_points()
-        self.has_tanked = False
-        self.started = False
-        self.ended = False
-        self.action_space = (0, 1, 2, 3)
-        self.state_count = self.map_size * 2 + 1 + len(self.quests) + 1
-        self.observation_space = 37
-        # self.actions = [self.action_up, self.action_down, self.action_left, self.action_right]
+        self.map = np.zeros(shape=(self.width, self.height)) #, dtype=np.uint8)
+        self.player_pos = [random.randint(0, self.width - 1), random.randint(0, self.height - 1)]
+        self.set_random_points(self.player_pos)
+
         self.scribe = Scribe(self.quest_nr, self.station_nr, self.map_size ** 2)
 
         self.actions = [self.action_up, self.action_down, self.action_left, self.action_right, self.action_special]
         self.action_count = len(self.action_space)
-        # self.actions = [self.action_up, self.action_down, self.action_left, self.action_right, self.action_wait, self.action_special]
-
-        for i in range(self.map_size):
-            temp = []
-            for y in range(self.map_size):
-                temp.append("XX")
-            self.map.append(temp)
-
-        self.map[0][0] = "ST"
-
-        for i in range(len(self.quests)):
-            quest = self.quests[i]
-            self.map[quest[0]][quest[1]] = "Q" + str(i + 1)
-
-        for i in range(len(self.destinations)):
-            destination = self.destinations[i]
-            self.map[destination[0]][destination[1]] = "R" + str(i + 1)
-
-        for gas_station in self.gas_stations:
-            self.map[gas_station[0]][gas_station[1]] = "LP"
 
     def reset(self):
-        self.player_pos = [random.randint(0, self.map_size - 1), random.randint(0, self.map_size - 1)]
-        self.gas = 150
-        self.money = 400
-        self.cargo = [0, 0, 0, 0, 0]
+        self.map = np.zeros(shape=(self.width, self.height)) #, dtype=np.uint8)
+        self.player_pos = [random.randint(0, self.width - 1), random.randint(0, self.height - 1)]
+        self.set_random_points(self.player_pos)
+        self.gas = self.start_gas
+        self.money = self.start_money
+        self.cargo = [0 for i in range(self.quest_nr)]
+        self.rewards = [0 for i in range(self.quest_nr)]
         self.is_done = False
         self.reward = 0
-        self.has_tanked = False
-        self.started = False
-        self.ended = False
         self.scribe = Scribe(self.quest_nr, self.station_nr, self.map_size ** 2)
         return self.get_state_object()
 
     def get_state_object(self):
-        state = (self.player_pos, self.cargo, self.gas, self.money)
-        # print("State ", state)
+        temp_map = copy.deepcopy(self.map)
+        temp_map[self.player_pos[0]][self.player_pos[1]] = -self.player_code
+
+        # print(temp_map)
+
+        # pos = np.zeros(shape=(self.width + self.height))
+        # pos[self.player_pos[0]] = 1
+        # pos[self.player_pos[1] + self.width] = 1
+
+        #
+        # print(temp_map)
+        # print("")
+        # print("")
+        # print("")
+        # print("")
+
+        state = np.reshape(temp_map, self.width * self.height)
+        state = state / 255
+        state = np.append(state, self.cargo)
+        state = np.append(state, [self.gas / self.gas_max, np.clip(self.money / 500, 0, 1)])
+
+        # state = np.append(pos, state)
+
+
+        # state = (temp_map, self.cargo, self.gas, self.money)
         return state
 
     def step(self, action):
@@ -132,14 +146,15 @@ class Game:
             raise Exception('InvalidAction', action)
         else:
             reward = self.actions[action]()
-            # print("player pos: ", self.player_pos)
             if self.gas <= 0:
-                reward -= self.reward_normalizer * 0.5
+                reward -= self.death_reward
+                # reward -= self.reward_normalizer * 0.1
                 self.is_done = True
                 self.scribe.died[self.player_pos[0] + self.player_pos[1] * 15] += 1
 
         reward += self.action_special()
-        # reward /= self.reward_normalizer
+        if self.normalize_reward:
+            reward /= self.reward_normalizer
         state = (self.get_state_object(), reward, self.is_done, [])
         return state
 
@@ -153,7 +168,7 @@ class Game:
             return - 1 * self.gas_price
 
     def action_down(self):
-        if self.player_pos[0] == 14:
+        if self.player_pos[0] == self.height - 1:
             return self.action_wait()
         else:
             self.gas -= 1
@@ -161,7 +176,7 @@ class Game:
             return - 1 * self.gas_price
 
     def action_right(self):
-        if self.player_pos[1] == 14:
+        if self.player_pos[1] == self.width - 1:
             return self.action_wait()
         else:
             self.gas -= 1
@@ -182,28 +197,13 @@ class Game:
         return -1 * self.wait_discount * self.gas_price
 
     def action_special(self):
-        if self.player_pos in self.quests:
-            quest = self.quests.index(self.player_pos)
-            if self.cargo[quest] == 0:
-                self.scribe.picked[quest] += 1
-                self.started = True
-                self.cargo[quest] = 1
-                self.money += self.prepaid * self.rewards[quest]
-                return self.prepaid * self.rewards[quest] * self.quest_multiplier
-
-        elif self.player_pos in self.destinations:
-            quest = self.destinations.index(self.player_pos)
-            if self.cargo[quest] == 1:
-                self.scribe.ended[quest] += 1
-                self.ended = True
-                self.cargo[quest] = 0
-                self.money += (1 - self.prepaid) * self.rewards[quest]
-                return (1 - self.prepaid) * self.rewards[quest] * self.quest_multiplier
-
-        if self.player_pos in self.gas_stations:
+        tile_code = self.map[self.player_pos[0]][self.player_pos[1]]
+        if tile_code == 0:
+            return 0
+        elif tile_code == self.station_code:
             cost = self.gas - self.gas_max
             self.has_tanked = True
-            self.scribe.tanked[self.gas_stations.index(self.player_pos)] += 1
+            self.scribe.tanked += 1
             if abs(cost) > self.money:
                 cost = self.money * -1
                 self.money = 0
@@ -213,13 +213,58 @@ class Game:
                 self.gas = self.gas_max
             # print("Tanking. Cost: ", cost)
             return 0
-        # self.scribe.invalid_action += 1
-        # return 0
-        # return self.action_wait()
+        elif self.quest_code <= tile_code < (self.quest_code + self.quest_nr):
+            quest = int(tile_code - self.quest_code)
+            if self.cargo[quest] == 0:
+                self.scribe.picked[quest] += 1
+                self.cargo[quest] = 1
+                self.start_quest(quest)
+                self.money += self.rewards[quest] * self.prepaid
+                # return 2.5
+                return self.rewards[quest] * self.prepaid * self.quest_multiplier
+        elif self.reward_code <= tile_code < (self.reward_code + self.quest_nr):
+            quest = int(tile_code - self.reward_code)
+            if self.cargo[quest] == 1:
+                reward = self.end_quest(quest)
+                self.money += reward
+                return reward * self.quest_multiplier * (1 - self.prepaid)
+                # return 10
         return 0
+
+    def start_quest(self, quest_index):
+        pos = self.player_pos
+        destination = [random.randint(0, self.width - 1), random.randint(0, self.height - 1)]
+        while self.map[destination[0]][destination[1]] != 0:
+            destination = [random.randint(0, self.width - 1), random.randint(0, self.height - 1)]
+        self.map[destination[0]][destination[1]] = self.reward_code + quest_index
+        self.map[pos[0]][pos[1]] = 0
+        manhattan_distance = abs(pos[0] - destination[0]) + abs(pos[1] - destination[1])
+        reward = self.reward_per_step * (self.large_quest_bonus ** manhattan_distance)
+        # reward *= random.random(self.random_deviation) - random.random(self.random_deviation * 2)
+        reward += reward * random.uniform(-self.random_deviation, self.random_deviation)
+        self.rewards[quest_index] = reward
+
+    def end_quest(self, quest_index):
+        self.scribe.ended[quest_index] += 1
+        self.cargo[quest_index] = 0
+        reward = (1 - self.prepaid) * self.rewards[quest_index]
+        self.rewards[quest_index] = 0
+        self.map[self.player_pos[0]][self.player_pos[1]] = 0
+        destination = [random.randint(0, self.width - 1), random.randint(0, self.height - 1)]
+        while self.map[destination[0]][destination[1]] != 0:
+            destination = [random.randint(0, self.width - 1), random.randint(0, self.height - 1)]
+        self.map[destination[0]][destination[1]] = self.quest_code + quest_index
+        # return 2
+        return reward
+
 
     def sample_move(self):
         return random.randint(0, len(self.action_space) - 1)
+
+    def random_move(self):
+        action = random.randint(0, len(self.action_space) - 1)
+        _, _, is_done, _ = self.step(action)
+        return is_done
 
     def print_map(self, map=None):
         print("")
@@ -236,44 +281,39 @@ class Game:
                     line += "X" + str(trunc(map[i][j])) + " "
             print(line)
 
-    def set_random_points(self):
-        points = []
-        quest = []
-        destinations = []
-        gas_stations = []
-        rewards = []
-        for i in range(self.quest_nr * 2):
-            x = random.randint(self.map_size)
-            y = random.randint(self.map_size)
-            while [x, y] in points:
-                x = random.randint(self.map_size)
-                y = random.randint(self.map_size)
-            points.append([x, y])
-            if i < self.quest_nr:
-                quest.append([x, y])
-            else:
-                destinations.append([x, y])
+    def set_random_points(self, player_pos):
+        points = [player_pos]
+
+
+
+        if not self.uniform_gas_stations:
+            for i in range(self.station_nr):
+                x = random.randint(0, self.width - 1)
+                y = random.randint(0, self.height - 1)
+                while [x, y] in points:
+                    x = random.randint(0, self.width - 1)
+                    y = random.randint(0, self.height - 1)
+                points.append([x, y])
+                self.map[x][y] = self.station_code
+        else:
+            for i in range(self.station_nr):
+                point = self.uniform_gas_list[i]
+                x, y = point
+                points.append([x, y])
+                self.map[x][y] = self.station_code
+
 
         for i in range(self.quest_nr):
-            manhattan_distance = np.sum(np.abs([quest[i][0] - destinations[i][0], quest[i][1] - destinations[i][1]]))
-            reward = self.reward_per_step * (self.large_quest_bonus ** manhattan_distance)
-            reward *= random.random(self.random_deviation) - random.random(self.random_deviation * 2)
-            rewards.append(reward)
-
-        for i in range(self.station_nr):
-            x = random.randint(self.map_size)
-            y = random.randint(self.map_size)
+            x = random.randint(0, self.width - 1)
+            y = random.randint(0, self.height - 1)
             while [x, y] in points:
-                x = random.randint(self.map_size)
-                y = random.randint(self.map_size)
+                x = random.randint(0, self.width - 1)
+                y = random.randint(0, self.height - 1)
             points.append([x, y])
-            gas_stations.append([x, y])
+            self.map[x][y] = self.quest_code + i
 
-        self.quests = quest
-        self.destinations = destinations
-        self.rewards = rewards
-        self.gas_stations = gas_stations
-        self.cargo = [0 for i in range(self.quest_nr)]
+
+
 
 
 

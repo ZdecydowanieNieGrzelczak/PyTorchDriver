@@ -9,7 +9,7 @@ from torch import optim
 
 
 class ActorCritic(nn.Module):
-    def __init__(self, observation_count, action_count, device, actor_shapes=(1200, 600), critic_shapes=(1000, 500), actor_lr=0.0009,
+    def __init__(self, observation_count, action_count, device, actor_shapes=(800, 250), critic_shapes=(250, 420), actor_lr=0.0009,
                  critic_lr=1e-4):
         super(ActorCritic, self).__init__()
         self.observation_count = observation_count
@@ -28,6 +28,7 @@ class ActorCritic(nn.Module):
     def create_actor_model(self, shapes):
 
         model = torch.nn.Sequential(
+            # torch.nn.Conv1d(self.observation_count, 25, kernel_size=1),
             torch.nn.Linear(self.observation_count, shapes[0]),
             torch.nn.LeakyReLU(),
             torch.nn.Linear(shapes[0], shapes[1]),
@@ -39,7 +40,6 @@ class ActorCritic(nn.Module):
         model = model.to(self.device)
 
         adam = torch.optim.Adam(model.parameters(), lr=self.actor_lr)
-        sdg = torch.optim.SGD(model.parameters(), lr=self.actor_lr)
 
         return model, adam
 
@@ -47,10 +47,11 @@ class ActorCritic(nn.Module):
         model = torch.nn.Sequential(
             torch.nn.Linear(self.observation_count, shapes[0]),
             torch.nn.ReLU(),
-            torch.nn.Linear(shapes[0], shapes[1]),
-            torch.nn.ReLU(),
-            torch.nn.Linear(shapes[1], 1),
-            # torch.nn.Tanh()
+            # torch.nn.Linear(shapes[0], shapes[1]),
+            # torch.nn.ReLU(),
+            torch.nn.Linear(shapes[0], 1),
+            # torch.nn.LeakyReLU()
+            # torch.nn.Tanhshrink()
         )
 
         model = model.to(self.device)
@@ -61,17 +62,17 @@ class ActorCritic(nn.Module):
 
     def backpropagate_actor(self, actor_loss):
 
-        before = []
-        after = []
-
-        for params in self.actor_model.parameters():
-            before.append(torch.sum(params))
+        # before = []
+        # after = []
+        #
+        # for params in self.actor_model.parameters():
+        #     before.append(torch.sum(params))
         self.actor_optimizer.zero_grad()
         actor_loss.backward(retain_graph=True)
         self.actor_optimizer.step()
 
-        for params in self.actor_model.parameters():
-            after.append(torch.sum(params))
+        # for params in self.actor_model.parameters():
+        #     after.append(torch.sum(params))
 
 
     def backpropagate_critic(self, critic_loss):
@@ -83,6 +84,23 @@ class ActorCritic(nn.Module):
 
     def update_target(self):
         self.target_critic.load_state_dict(self.critic_model.state_dict())
-        sums = []
-        for param in self.actor_model.parameters():
-            sums.append(torch.sum(param))
+        # sums = []
+        # for param in self.actor_model.parameters():
+        #     sums.append(torch.sum(param))
+
+
+class StateOracle(nn.Module):
+    def __init__(self, observation_count, action_count, hidden_dims=(200, 40)):
+        super(StateOracle, self).__init__()
+
+        self.hidden_1 = nn.Linear(observation_count + action_count, hidden_dims[0])
+        self.hidden_2 = nn.Linear(hidden_dims[0], hidden_dims[1])
+        self.head = nn.Linear(hidden_dims[1], observation_count)
+
+    def forward(self, x):
+        x = self.hidden_1(x)
+        x = self.hidden_2(x)
+        x = self.head(x)
+
+        return x
+

@@ -8,7 +8,7 @@ import copy
 import threading
 from operator import itemgetter
 
-
+import torch
 
 
 class VectorizedMemory:
@@ -30,6 +30,7 @@ class VectorizedMemory:
     working_alpha = 0
     working_beta = 0
     waiting_elements = []
+    is_prioritized = True
 
     def __init__(self, size, use_slices=True, batch_size=2048, gamma=16, bq_size=1, waiting_queue=False, standarized_size=True):
         self.data = [None] * (size + 1)
@@ -42,6 +43,7 @@ class VectorizedMemory:
         self.waiting_queue = waiting_queue
         self.standarized_size = standarized_size
         self.index_matrix = [i for i in range(size)]
+        self.size = size
 
     def append(self, element):
         while self._datalock:
@@ -148,6 +150,52 @@ class VectorizedMemory:
         return batch
 
 
+class NumpyChoicePrority:
+    is_prioritized = True
+
+    def __init__(self, size):
+        self.size = size
+        self.data = [None] * (size + 1)
+        self.priorities = [None] * (size + 1)
+        self.start = 0
+        self.end = 0
+        self.indexes = []
+
+    def append(self, element, priority):
+
+        self.data[self.end] = element
+        self.priorities[self.end] = priority
+        if len(self) < self.size:
+            self.indexes.append(self.end)
+        self.end = (self.end + 1) % len(self.data)
+
+        if self.end == self.start:
+            self.start = (self.start + 1) % len(self.data)
+
+    def __getitem__(self, item):
+        return self.data[(self.start + item) % len(self.data)]
+
+    def __len__(self):
+        if self.end < self.start:
+            return self.end + len(self.data) - self.start
+        else:
+            return self.end - self.start
+
+    def __iter__(self):
+        for i in range(len(self)):
+            yield (self[i])
+
+    def sample_batch(self, size):
+        total_priors = torch.sum(torch.Tensor(self.priorities))
+
+        p = self.priorities / total_priors
+
+        indexes = np.random.choice(self.indexes, size=size, p=p)
+
+
+
+    def add(self, element, priority):
+        self.append(element, priority)
 
 #####################################################################################
 #                                                                                   #
@@ -163,11 +211,13 @@ class Memory:
     """
     Simple ring buffer for storage of data that will be used while "replaying"
     """
+    is_prioritized = False
 
     def __init__(self, size):
         self.data = [None] * (size + 1)
         self.start = 0
         self.end = 0
+        self.size = size
 
     def append(self, element):
 
