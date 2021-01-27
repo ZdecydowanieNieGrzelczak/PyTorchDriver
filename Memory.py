@@ -212,6 +212,7 @@ class Memory:
     Simple ring buffer for storage of data that will be used while "replaying"
     """
     is_prioritized = False
+    is_multiprocessing = False
 
     def __init__(self, size):
         self.data = [None] * (size + 1)

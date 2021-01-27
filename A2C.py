@@ -9,7 +9,7 @@ from torch import optim
 
 
 class ActorCritic(nn.Module):
-    def __init__(self, observation_count, action_count, device, actor_shapes=(800, 250), critic_shapes=(250, 420), actor_lr=0.0009,
+    def __init__(self, observation_count, action_count, device, actor_shapes=(512, 32), critic_shapes=(512, 32), actor_lr=0.0009,
                  critic_lr=1e-4):
         super(ActorCritic, self).__init__()
         self.observation_count = observation_count
@@ -24,6 +24,11 @@ class ActorCritic(nn.Module):
         self.critic_model, self.critic_optimizer = self.create_critic_model(critic_shapes)
 
         self.target_critic, self.target_critic_optim = self.create_critic_model(critic_shapes)
+
+        self.old_actor_model, _ = self.create_actor_model(actor_shapes)
+
+        self.update_actor()
+        self.update_target()
 
     def create_actor_model(self, shapes):
 
@@ -47,9 +52,9 @@ class ActorCritic(nn.Module):
         model = torch.nn.Sequential(
             torch.nn.Linear(self.observation_count, shapes[0]),
             torch.nn.ReLU(),
-            # torch.nn.Linear(shapes[0], shapes[1]),
-            # torch.nn.ReLU(),
-            torch.nn.Linear(shapes[0], 1),
+            torch.nn.Linear(shapes[0], shapes[1]),
+            torch.nn.ReLU(),
+            torch.nn.Linear(shapes[1], 1),
             # torch.nn.LeakyReLU()
             # torch.nn.Tanhshrink()
         )
@@ -84,13 +89,18 @@ class ActorCritic(nn.Module):
 
     def update_target(self):
         self.target_critic.load_state_dict(self.critic_model.state_dict())
+        self.target_critic.eval()
         # sums = []
         # for param in self.actor_model.parameters():
         #     sums.append(torch.sum(param))
 
+    def update_actor(self):
+        self.old_actor_model.load_state_dict(self.actor_model.state_dict())
+        self.old_actor_model.eval()
+
 
 class StateOracle(nn.Module):
-    def __init__(self, observation_count, action_count, hidden_dims=(200, 40)):
+    def __init__(self, observation_count, action_count, hidden_dims=(800, 350)):
         super(StateOracle, self).__init__()
 
         self.hidden_1 = nn.Linear(observation_count + action_count, hidden_dims[0])
