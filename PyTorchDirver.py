@@ -235,13 +235,15 @@ def learn():
 
 
 
-def save_to_file():
-    torch.save(MasterBrain.actor_model.state_dict(), control_dict["ACTOR_PATH"])
-    torch.save(MasterBrain.critic_model.state_dict(), control_dict["CRITIC_PATH"])
+def save_to_file(episode_nr):
+    path = os.mkdir(MODEL_PATH, f'ITERATION_{episode_nr}')
+    
+    torch.save(MasterBrain.actor_model.state_dict(), path + 'Actor.json')
+    torch.save(MasterBrain.critic_model.state_dict(), path + 'Critic.json')
     logging.debug("Weights files updated")
 
 
-def plot_and_save(filename, sliding_window_enhancer):
+def plot_and_save(filename, path):
     global last_index
 
     last_index -= (control_dict["SLIDING_INIT_VALUE"] + sliding_window_enhancer)
@@ -263,20 +265,20 @@ def plot_and_save(filename, sliding_window_enhancer):
     plot_axis(line5, averaged_crit_losses, ax5)
     plot_axis(line6, averaged_invalid, ax6)
 
-    PLT.savefig(GRAPHS_PATH + filename)
+    PLT.savefig(path + filename)
 
-def save_buffers_binary():
-    with open(GRAPHS_PATH + 'Rewards.p', 'wb') as fp:
+def save_buffers_binary(path):
+    with open(path + 'Rewards.p', 'wb') as fp:
         pickle.dump(reward_buffer, fp, protocol=pickle.HIGHEST_PROTOCOL)
-    with open(GRAPHS_PATH + 'Actor loss.p', 'wb') as fp:
+    with open(path + 'Actor loss.p', 'wb') as fp:
         pickle.dump(losses, fp, protocol=pickle.HIGHEST_PROTOCOL)
-    with open(GRAPHS_PATH + 'Steps.p', 'wb') as fp:
+    with open(path + 'Steps.p', 'wb') as fp:
         pickle.dump(total_steps, fp, protocol=pickle.HIGHEST_PROTOCOL)
-    with open(GRAPHS_PATH + 'Probability.p', 'wb') as fp:
+    with open(path + 'Probability.p', 'wb') as fp:
         pickle.dump(TD_errors, fp, protocol=pickle.HIGHEST_PROTOCOL)
-    with open(GRAPHS_PATH + 'Critic losses.p', 'wb') as fp:
+    with open(path + 'Critic losses.p', 'wb') as fp:
         pickle.dump(crit_losses, fp, protocol=pickle.HIGHEST_PROTOCOL)
-    with open(GRAPHS_PATH + 'Invalid.p', 'wb') as fp:
+    with open(path + 'Invalid.p', 'wb') as fp:
         pickle.dump(invalid, fp, protocol=pickle.HIGHEST_PROTOCOL)
 
     print("Buffers dumped")
@@ -362,7 +364,7 @@ if __name__ == '__main__':
 
 
     master_params = {
-        'EPOCHS': 100010,
+        'EPOCHS': 1000000,
         'n_workers': 5,
         "actor_lr": 1e-4,
         "critic_lr": 1e-5,
@@ -378,7 +380,7 @@ if __name__ == '__main__':
     control_dict = {
         "RESET_TARGET_EVERY": 30,
         "RESET_ACTOR_EVERY": 8,
-        "SAVE_TO_PATH_EVERY": 10000,
+        "SAVE_TO_PATH_EVERY": 25000,
         "ACTOR_PATH": os.path.join(MODEL_PATH, "Actor_model.json"),
         "CRITIC_PATH": os.path.join(MODEL_PATH, "Critic_model.json"),
         "SLIDING_INIT_VALUE": 5000,
@@ -386,7 +388,7 @@ if __name__ == '__main__':
         "SLIDING_INCREMENTAL_VALUE": 0,
         "PLOT_TREND_EVERY": 2000,
         "TEST_VALUES": False,
-        "SAVE_BUFFERS_EVERY": 10000,
+        "SAVE_BUFFERS_EVERY": 25000,
         "RANDOM_EPISODES_EVERY": 10,
         "NUMBER_IF_RANDOM_EPISODES": 2
     }
@@ -479,7 +481,6 @@ if __name__ == '__main__':
     ax6.legend()
 
 
-    sliding_window_enhancer = 0
     try:
         for i in range(1, master_params['EPOCHS']):
             reward = run_episode()
@@ -490,18 +491,18 @@ if __name__ == '__main__':
             if i % control_dict["RESET_ACTOR_EVERY"] == 0:
                 MasterBrain.update_actor()
             if i % control_dict["SAVE_TO_PATH_EVERY"] == 0:
-                sliding_window_enhancer += control_dict["SLIDING_INCREMENTAL_VALUE"]
-                save_to_file()
-                plot_and_save("Graphs_iter_" + str(i) + ".png", sliding_window_enhancer)
-            if i % control_dict["SAVE_BUFFERS_EVERY"] == 0:
-                save_buffers_binary()
+                path = os.mkdir(GRAPHS_PATH, f'ITERATION_{i}')
+                save_to_file(i)
+                plot_and_save("Graphs_iter_" + str(i) + ".png", path)
+                save_buffers_binary(path)
             if i % control_dict["RANDOM_EPISODES_EVERY"] == 0:
                 init_memory(control_dict["NUMBER_IF_RANDOM_EPISODES"])
     except KeyboardInterrupt:
         MasterBrain.update_target()
-        save_to_file()
-        plot_and_save("Graphs_iter_" + str(len(reward_buffer)) + ".png", sliding_window_enhancer)
-        save_buffers_binary()
+        path = os.mkdir(GRAPHS_PATH, f'ITERATION_{i}')
+        save_to_file(i)
+        plot_and_save("Graphs_iter_" + str(len(reward_buffer)) + ".png", path)
+        save_buffers_binary(path)
 
     PLT.savefig("result.png")
     # plot_trend(reward_buffer)
