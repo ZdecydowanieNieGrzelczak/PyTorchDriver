@@ -11,6 +11,7 @@ from ConvEnv import ConvEnv
 import json
 import pickle
 from torch.nn.utils.rnn import pad_sequence
+import pathlib
 
 import logging
 logging.basicConfig(level=logging.DEBUG, format=' %(asctime)s - %(message)s')
@@ -43,7 +44,7 @@ def create_config_dict():
     config["learning"] = learning
     config["environment"] = environment
 
-    with open('Graphs\\config.json', 'w') as fp:
+    with open(GRAPHS_PATH + 'config.json', 'w') as fp:
         json.dump(config, fp)
 
 
@@ -262,20 +263,20 @@ def plot_and_save(filename, sliding_window_enhancer):
     plot_axis(line5, averaged_crit_losses, ax5)
     plot_axis(line6, averaged_invalid, ax6)
 
-    PLT.savefig("Graphs\\" + filename)
+    PLT.savefig(GRAPHS_PATH + filename)
 
 def save_buffers_binary():
-    with open('Graphs\\Rewards.p', 'wb') as fp:
+    with open(GRAPHS_PATH + 'Rewards.p', 'wb') as fp:
         pickle.dump(reward_buffer, fp, protocol=pickle.HIGHEST_PROTOCOL)
-    with open('Graphs\\Actor loss.p', 'wb') as fp:
+    with open(GRAPHS_PATH + 'Actor loss.p', 'wb') as fp:
         pickle.dump(losses, fp, protocol=pickle.HIGHEST_PROTOCOL)
-    with open('Graphs\\Steps.p', 'wb') as fp:
+    with open(GRAPHS_PATH + 'Steps.p', 'wb') as fp:
         pickle.dump(total_steps, fp, protocol=pickle.HIGHEST_PROTOCOL)
-    with open('Graphs\\Probability.p', 'wb') as fp:
+    with open(GRAPHS_PATH + 'Probability.p', 'wb') as fp:
         pickle.dump(TD_errors, fp, protocol=pickle.HIGHEST_PROTOCOL)
-    with open('Graphs\\Critic losses.p', 'wb') as fp:
+    with open(GRAPHS_PATH + 'Critic losses.p', 'wb') as fp:
         pickle.dump(crit_losses, fp, protocol=pickle.HIGHEST_PROTOCOL)
-    with open('Graphs\\Invalid.p', 'wb') as fp:
+    with open(GRAPHS_PATH + 'Invalid.p', 'wb') as fp:
         pickle.dump(invalid, fp, protocol=pickle.HIGHEST_PROTOCOL)
 
     print("Buffers dumped")
@@ -304,7 +305,7 @@ def plot_trend(data, window_size=50):
 
     PLT.legend()
 
-    PLT.savefig("Graphs\\" + "trend visualisation.png")
+    PLT.savefig(GRAPHS_PATH + "trend visualisation.png")
 
 
 
@@ -341,7 +342,9 @@ if __name__ == '__main__':
     backpropagation_time = []
     learning_time = []
 
-    MODEL_PATH = os.path.abspath("Models")
+    # MODEL_PATH = os.path.abspath("Models")
+    MODEL_PATH = pathlib.Path('Models').resolve()
+    GRAPHS_PATH = pathlib.Path('Graphs').resolve()
 
     # c_loss = torch.nn.SmoothL1Loss(reduction='none')
     c_loss = torch.nn.L1Loss(reduction='none')
