@@ -236,7 +236,8 @@ def learn():
 
 
 def save_to_file(episode_nr):
-    path = os.mkdir(MODEL_PATH, f'ITERATION_{episode_nr}')
+    path = os.path.join(MODEL_PATH, f'ITERATION_{episode_nr}')
+    os.mkdir(path)
     
     torch.save(MasterBrain.actor_model.state_dict(), path + 'Actor.json')
     torch.save(MasterBrain.critic_model.state_dict(), path + 'Critic.json')
@@ -416,7 +417,7 @@ if __name__ == '__main__':
     }
 
 
-
+    sliding_window_enhancer = 0
 
     current_epsilon = exploration_dict["STARTING_EPSILON"]
 
@@ -491,7 +492,8 @@ if __name__ == '__main__':
             if i % control_dict["RESET_ACTOR_EVERY"] == 0:
                 MasterBrain.update_actor()
             if i % control_dict["SAVE_TO_PATH_EVERY"] == 0:
-                path = os.mkdir(GRAPHS_PATH, f'ITERATION_{i}')
+                path = os.path.join(GRAPHS_PATH, f'ITERATION_{i}')
+                os.mkdir(path)
                 save_to_file(i)
                 plot_and_save("Graphs_iter_" + str(i) + ".png", path)
                 save_buffers_binary(path)
@@ -499,7 +501,8 @@ if __name__ == '__main__':
                 init_memory(control_dict["NUMBER_IF_RANDOM_EPISODES"])
     except KeyboardInterrupt:
         MasterBrain.update_target()
-        path = os.mkdir(GRAPHS_PATH, f'ITERATION_{i}')
+        path = os.path.join(GRAPHS_PATH, f'ITERATION_{i}')
+        os.mkdir(path)
         save_to_file(i)
         plot_and_save("Graphs_iter_" + str(len(reward_buffer)) + ".png", path)
         save_buffers_binary(path)
