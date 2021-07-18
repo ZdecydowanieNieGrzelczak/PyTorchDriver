@@ -9,7 +9,7 @@ from torch import optim
 
 
 class ActorCritic(nn.Module):
-    def __init__(self, observation_count, action_count, device, actor_shapes=(512, 32), critic_shapes=(512, 32), actor_lr=0.0009,
+    def __init__(self, observation_count, action_count, device, actor_shapes=(512, 64), critic_shapes=(512, 32), actor_lr=0.0009,
                  critic_lr=1e-4):
         super(ActorCritic, self).__init__()
         self.observation_count = observation_count

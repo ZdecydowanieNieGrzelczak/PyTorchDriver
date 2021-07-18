@@ -86,7 +86,6 @@ class ConvEnv:
         self.money = self.start_money
         self.uniform_gas_stations = uniform_gas_stations
         self.observation_space = self.width * self.height + 2
-        # self.observation_space = self.width * self.height + 2
         self.cargo = [0 for i in range(quest_nr)]
         self.rewards = [0 for i in range(quest_nr)]
 
@@ -125,28 +124,10 @@ class ConvEnv:
         temp_map = copy.deepcopy(self.map)
         temp_map[self.player_pos[0]][self.player_pos[1]] = self.player_code
 
-        # print(temp_map)
-
-        # pos = np.zeros(shape=(self.width + self.height))
-        # pos[self.player_pos[0]] = 1
-        # pos[self.player_pos[1] + self.width] = 1
-
-        #
-        # print(temp_map)
-        # print("")
-        # print("")
-        # print("")
-        # print("")
-
         state = np.reshape(temp_map, self.width * self.height)
         state = state / 255
-        # state = np.append(state, self.cargo)
         state = np.append(state, [self.gas / self.gas_max, np.clip(self.money / 500, 0, 1)])
 
-        # state = np.append(pos, state)
-
-
-        # state = (temp_map, self.cargo, self.gas, self.money)
         return state
 
     def step(self, action):

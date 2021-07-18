@@ -1,21 +1,16 @@
 import sys
 
 import torch
-import gym
 from A2C import ActorCritic, StateOracle
 import numpy as np
 from matplotlib import pyplot as PLT
-import multiprocessing as mp
 import torch.optim
-from torch.nn import functional as F
-from Memory import Memory, Sample
+from Memory import Memory
 import os
-from Map import Game, Scribe
-from ConvEnv import ConvEnv, Scribe
+from ConvEnv import ConvEnv
 import json
 import pickle
 from torch.nn.utils.rnn import pad_sequence
-from SumTree import PriorMemory
 
 import logging
 logging.basicConfig(level=logging.DEBUG, format=' %(asctime)s - %(message)s')
@@ -114,18 +109,7 @@ def plot_axis(line, data, ax):
 
 
 def act(state):
-    if exploration_dict["FORCED_EXPLORATION"]:
-        if exploration_dict["currently_exploring"]:
-            if np.random.random() <= current_epsilon:
-                return env.sample_move(), 0.25
-
-    # return env.sample_move(), 0.25
-
-    # print(state)
-    # print(np.shape(state))
-
     encoded_state = torch.from_numpy(state).float()
-    # encoded_state = torch.from_numpy(encode_state(state)).float()
 
     encoded_state = encoded_state.to(GPU_DEVICE)
     policy = MasterBrain.actor_model(encoded_state)
@@ -134,22 +118,7 @@ def act(state):
 
     # print(action_dist.probs.data)
     action = action_dist.sample().cpu().view(-1).numpy()[0]
-    try:
-        prob = action_dist.probs[action]
-    except IndexError:
-        print("Action: ", action)
-        print("Dist: ", action_dist.probs)
-        print("Policy: ", policy)
-        print("logits: ", logits)
-        policy = MasterBrain.actor_model(encoded_state)
-        logits = policy.view(-1)
-        action_dist = torch.distributions.Categorical(logits=logits)
-        print("Dist: ", action_dist.probs)
-        print("Policy: ", policy)         
-        print("logits: ", logits)         
-
-
-
+    prob = action_dist.probs[action]
 
     return action, prob.cpu().data.numpy()
 
@@ -178,14 +147,11 @@ def run_episode():
             break
 
     learn()
-
     env.scribe.set_steps(steps)
-    # invalid.append(0)
     invalid.append(env.scribe.percentage)
     total_steps.append(steps)
     reward_buffer.append(total_rewards)
     TD_errors.append(np.mean(probs))
-    # reward_buffer.append(total_rewards / steps)
 
     return total_rewards
 
@@ -193,11 +159,9 @@ def run_episode():
 def learn():
 
     batch = memory.sample_batch(master_params["BATCH_SIZE"])
-    # ISWeights = [1 for i in range(master_params["BATCH_SIZE"] + master_params["PRIORITY_BATCH_SIZE"])]
 
     priority_batch = priority_memory.sample_batch(master_params["PRIORITY_BATCH_SIZE"])
 
-    # print(priority_batch)
 
     batch = batch + priority_batch
 
@@ -208,125 +172,64 @@ def learn():
     critic_targetes = []
     total_crit_loss, total_actor_loss = 0, 0
     for i, sample in enumerate(batch):
-        # print(sample)
         state, action, old_prob, reward, next_state, is_done = sample
-        # ISWeight = ISWeights[i]
 
-        # tensor_state = torch.from_numpy(encode_state(state)).float()
         tensor_state = torch.from_numpy(state).float()
         tensor_state = tensor_state.to(GPU_DEVICE)
 
         tensor_next_state = torch.from_numpy(next_state).float().to(GPU_DEVICE)
 
-        # probs = MasterBrain.actor_model(tensor_state).view(-1)[action]
         policy = MasterBrain.actor_model(tensor_state)
         logits = policy.view(-1)
         action_dist = torch.distributions.Categorical(logits=logits)
-        # entropy = action_dist.entropy().mean().cpu()
 
         probs = action_dist.probs[action]
-
-        # if PPO_dict["IMPLEMENT_PPO"]:
-        #     # print("probs: ", probs.data, " old probs: ", old_prob)
-        #     ratio.append((probs.cpu() - old_prob).exp())
 
         critic_value = MasterBrain.critic_model(tensor_state)
         if not is_done:
             future_state = MasterBrain.critic_model(tensor_next_state).cpu().data.numpy()[0]
             target_state = MasterBrain.target_critic(tensor_next_state).detach()
-            # future_state = MasterBrain.target_critic(torch.from_numpy(encode_state(next_state)).float().to(GPU_DEVICE))
-            target_state = reward * target_state * master_params["discount"]
+            target_state = reward + target_state * master_params["discount"]
             reward = reward + future_state * master_params["discount"]
-            distribution = MasterBrain.old_actor_model(tensor_state).cpu().detach()
-            logits = distribution.view(-1)
-            old_probs = torch.distributions.Categorical(logits=logits)
-            old_prob = old_probs.probs[action]
         else:
             target_state = torch.Tensor([reward]).to(GPU_DEVICE)
 
-        if PPO_dict["IMPLEMENT_PPO"]:
-
-            advantage = reward - critic_value.detach().cpu()
-
-            # print(advantage)
-            ratio = probs.cpu() * (1 / old_prob)
-
-
-            alpha = PPO_dict["PPO_RATIO"]
-            loss1 = ratio * advantage
-            loss2 = torch.clamp(ratio, 1 - alpha, 1 + alpha) * advantage # * probs.cpu().detach()
-            actor_loss = torch.min(loss1, loss2) # + entropy * master_params["ENTROPY_LR"]
-            critic_huber_loss = c_loss(critic_value, target_state.detach())
-
-            # MasterBrain.backpropagate_actor(actor_loss)
-            # MasterBrain.backpropagate_critic(critic_huber_loss)
-
-            total_crit_loss += critic_huber_loss
-            total_actor_loss += actor_loss
-
-
-    if not PPO_dict["IMPLEMENT_PPO"]:
         rewards.append(reward)
         critic_values.append(critic_value)
         actor_probs.append(probs)
         critic_targetes.append(target_state)
-    else:
-        MasterBrain.backpropagate_actor(total_actor_loss)
-        MasterBrain.backpropagate_critic(total_crit_loss)
-        losses.append(total_actor_loss.cpu().data.numpy())
-        crit_losses.append(total_crit_loss.cpu().data.numpy())
 
 
-    if not PPO_dict["IMPLEMENT_PPO"]:
+    actor_probs = torch.stack(actor_probs).flip(dims=(0, )).view(-1)
 
-        actor_probs = torch.stack(actor_probs).flip(dims=(0, )).view(-1)
+    critic_values = torch.stack(critic_values).flip(dims=(0, )).view(-1)
+    critic_targetes = torch.stack(critic_targetes).flip(dims=(0, )).view(-1)
 
-        # ISWeights = torch.Tensor(ISWeights).flip(dims=(0, )).view(-1)
-        critic_values = torch.stack(critic_values).flip(dims=(0, )).view(-1)
-        critic_targetes = torch.stack(critic_targetes).flip(dims=(0, )).view(-1)
-
-        # noinspection PyArgumentList
-        rewards = torch.Tensor(rewards).flip(dims=(0, )).view(-1)
+    # noinspection PyArgumentList
+    rewards = torch.Tensor(rewards).flip(dims=(0, )).view(-1)
 
 
-        advantages = rewards - critic_values.detach().cpu()
+    advantages = rewards - critic_values.detach().cpu()
 
 
-        total_actor_loss = loss_fn(actor_probs, advantages)
+    total_actor_loss = loss_fn(actor_probs, advantages)
 
-        if memory.is_prioritized:
-            memory.update_nodes(np.abs(total_actor_loss.cpu().detach().numpy()))
+    if memory.is_prioritized:
+        memory.update_nodes(np.abs(total_actor_loss.cpu().detach().numpy()))
 
-        actor_loss = -1 * torch.sum(total_actor_loss)
-
-
-        # critic_loss = torch.pow(critic_targetes.detach() - critic_values, 2) # TAK WIKIPEDIA NAWET MOWI
+    actor_loss = -1 * torch.sum(total_actor_loss)
 
 
-        critic_huber_loss = c_loss(critic_values, critic_targetes.detach())
+    critic_huber_loss = c_loss(critic_values, critic_targetes.detach())
 
+    critic_loss = critic_huber_loss.sum()
 
-        # critic_loss = torch.abs(critic_targetes.detach() - critic_values) # TAK WIKIPEDIA NAWET MOWI
+    MasterBrain.backpropagate_actor(actor_loss)
+    if torch.abs(critic_loss) > master_params["min_loss"]:
+        MasterBrain.backpropagate_critic(critic_loss)
 
-
-        # critic_loss = F.normalize(critic_loss, dim=0)
-
-
-        # critic_loss = critic_loss.sum()
-        critic_loss = critic_huber_loss.sum()
-
-        MasterBrain.backpropagate_actor(actor_loss)
-        if torch.abs(critic_loss) > master_params["min_loss"]:
-            MasterBrain.backpropagate_critic(critic_loss)
-
-
-        losses.append(actor_loss.cpu().detach())
-        crit_losses.append(critic_loss.cpu().detach())
-        if not curiosity_dict["IS_CURIOUS"]:
-            pass
-            # TD_errors.append(torch.mean(actor_probs.cpu().data))
-            # TD_errors.append(torch.mean(advantages))
-
+    losses.append(actor_loss.cpu().detach())
+    crit_losses.append(critic_loss.cpu().detach())
 
 
 
@@ -380,7 +283,6 @@ def save_buffers_binary():
 
 
 def plot_trend(data, window_size=50):
-    trend_analysis = PLT.figure(2)
     head = data[:window_size]
     tail = data[-window_size:]
 
@@ -394,7 +296,6 @@ def plot_trend(data, window_size=50):
     slided = sliding_window(data, window_size)
 
     x_data = [i for i in range(window_size // 2, len(data) - (window_size // 2))]
-    x_full = [i for i in range(len(data))]
 
 
     PLT.plot(x_data, trend_data, label="trend line")
@@ -415,10 +316,6 @@ else:
     logging.debug("Running on the CPU")
 
 if __name__ == '__main__':
-    # env = Game()
-    # env = gym.make("MountainCar-v0")
-    # env = gym.make("CartPole-v0")
-    # env = gym.make("Acrobot-v1")
 
     memory_dict = {
         "size": 524288,
@@ -454,29 +351,18 @@ if __name__ == '__main__':
 
     memory = Memory(memory_dict["size"])
     priority_memory = Memory(100000)
-    #
-    # memory = PriorMemory(memory_dict["size"], is_multiprocessing=True)
-
-
-    # brain = ActorCritic(4, 2)
 
     observation_count = env.observation_space
-    # observation_count = 37
     action_count = env.action_count
 
 
-    # observation_count = env.observation_space
-    # action_count = env.action_count
-
-    # observation_count = 4
-    # action_count = 2
 
 
     master_params = {
         'EPOCHS': 100010,
         'n_workers': 5,
         "actor_lr": 1e-4,
-        "critic_lr": 2e-4,
+        "critic_lr": 1e-5,
         "BATCH_SIZE": 30,
         "PRIORITY_BATCH_SIZE": 2,
         "discount": 0.97,
@@ -520,7 +406,7 @@ if __name__ == '__main__':
     }
 
     PPO_dict = {
-        "IMPLEMENT_PPO": True,
+        "IMPLEMENT_PPO": False,
         "PPO_RATIO": 0.2
     }
 
@@ -591,50 +477,10 @@ if __name__ == '__main__':
 
 
     sliding_window_enhancer = 0
-
-
-    if control_dict["TEST_VALUES"]:
-        MasterBrain.critic_model.load_state_dict(torch.load(control_dict["CRITIC_PATH"]))
-        MasterBrain.critic_model.eval()
-        logging.debug("LOADED CRITIC VALUES")
-        state = env.reset()
-        # state[-2] = 0.000000001
-        # state[-1] = 1
-        values = np.zeros(shape=(env.width, env.height))
-        for i in range(env.width):
-            for j in range(env.height):
-                previous = state[j + i * env.height]
-                state[j + i * env.height] = env.player_code / 255
-                # print(state[:-2].reshape(env.width, env.height))
-                # print("")
-                # print(j + i * env.height)
-                logs = MasterBrain.actor_model(torch.from_numpy(state).float().to(GPU_DEVICE)).cpu().data
-                action_dist = torch.distributions.Categorical(logits=logs)
-
-                values[j][i] = np.argmax(action_dist.probs.data.numpy())
-
-                # values[j][i] = MasterBrain.critic_model(torch.from_numpy(state).float().to(GPU_DEVICE)).cpu().data.numpy()
-                state[j + i * env.height] = previous
-        print(state[:-2].reshape(env.width, env.height))
-        print(values)
-        sys.exit()
-
-
-    create_config_dict()
-
     try:
         for i in range(1, master_params['EPOCHS']):
             reward = run_episode()
             torch.cuda.empty_cache()
-            # logging.debug("".join(["episode ", str(i), " Reward: ", str(reward)]))
-            # print(i)
-            memory_dict["current_beta"] += (memory_dict["max_beta"] - memory_dict["starting_beta"]) / master_params['EPOCHS']
-
-            # if exploration_dict["FORCED_EXPLORATION"]:
-            #     if exploration_dict["currently_exploring"]:
-            #         logging.debug("Exploring with probability: " + str(current_epsilon))
-            # logging.debug(env.scribe)
-
             if i % control_dict["RESET_TARGET_EVERY"] == 0:
                 logging.debug("Episode: " + str(i))
                 MasterBrain.update_target()
@@ -644,13 +490,6 @@ if __name__ == '__main__':
                 sliding_window_enhancer += control_dict["SLIDING_INCREMENTAL_VALUE"]
                 save_to_file()
                 plot_and_save("Graphs_iter_" + str(i) + ".png", sliding_window_enhancer)
-            # if exploration_dict["FORCED_EXPLORATION"]:
-            #     current_epsilon = (exploration_dict["STARTING_EPSILON"] - exploration_dict["ENDING EPSILONE"]) / \
-            #                       exploration_dict["EXPLORATION_TIME"] * \
-            #         (exploration_dict["EXPLORATION_TIME"] - (i % exploration_dict["EXPLOITATION_TME"]))
-            #
-            #     if i % exploration_dict["EXPLOITATION_TME"] == 0:
-            #         exploration_dict["currently_exploring"] = not exploration_dict["currently_exploring"]
             if i % control_dict["SAVE_BUFFERS_EVERY"] == 0:
                 save_buffers_binary()
             if i % control_dict["RANDOM_EPISODES_EVERY"] == 0:
