@@ -239,8 +239,10 @@ def save_to_file(episode_nr):
     path = os.path.join(MODEL_PATH, f'ITERATION_{episode_nr}')
     os.mkdir(path)
     
-    torch.save(MasterBrain.actor_model.state_dict(), path + 'Actor.json')
-    torch.save(MasterBrain.critic_model.state_dict(), path + 'Critic.json')
+    a_path = os.path.join(path, 'Actor.json')
+    c_path = os.path.join(path, 'Critic.json')
+    torch.save(MasterBrain.actor_model.state_dict(), a_path )
+    torch.save(MasterBrain.critic_model.state_dict(), c_path)
     logging.debug("Weights files updated")
 
 
