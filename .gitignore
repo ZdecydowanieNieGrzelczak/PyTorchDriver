@@ -130,9 +130,9 @@ dmypy.json
 
 
 # Analizy
-Graphs/
-Models/
-result.png
+#Graphs/
+#Models/
+
 
 # PyCharm
 .idea/
