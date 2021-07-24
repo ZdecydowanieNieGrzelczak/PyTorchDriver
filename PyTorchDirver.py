@@ -268,20 +268,20 @@ def plot_and_save(filename, path):
     plot_axis(line5, averaged_crit_losses, ax5)
     plot_axis(line6, averaged_invalid, ax6)
 
-    PLT.savefig(path + filename)
+    PLT.savefig(os.path.join(path, filename))
 
 def save_buffers_binary(path):
-    with open(path + 'Rewards.p', 'wb') as fp:
+    with open(os.path.join(path, 'Rewards.p'), 'wb') as fp:
         pickle.dump(reward_buffer, fp, protocol=pickle.HIGHEST_PROTOCOL)
-    with open(path + 'Actor loss.p', 'wb') as fp:
+    with open(os.path.join(path, 'Actor loss.p'), 'wb') as fp:
         pickle.dump(losses, fp, protocol=pickle.HIGHEST_PROTOCOL)
-    with open(path + 'Steps.p', 'wb') as fp:
+    with open(os.path.join(path, 'Steps.p'), 'wb') as fp:
         pickle.dump(total_steps, fp, protocol=pickle.HIGHEST_PROTOCOL)
-    with open(path + 'Probability.p', 'wb') as fp:
+    with open(os.path.join(path, 'Probability.p'), 'wb') as fp:
         pickle.dump(TD_errors, fp, protocol=pickle.HIGHEST_PROTOCOL)
-    with open(path + 'Critic losses.p', 'wb') as fp:
+    with open(os.path.join(path , 'Critic losses.p'), 'wb') as fp:
         pickle.dump(crit_losses, fp, protocol=pickle.HIGHEST_PROTOCOL)
-    with open(path + 'Invalid.p', 'wb') as fp:
+    with open(os.path.join(path , 'Invalid.p'), 'wb') as fp:
         pickle.dump(invalid, fp, protocol=pickle.HIGHEST_PROTOCOL)
 
     print("Buffers dumped")
@@ -367,7 +367,7 @@ if __name__ == '__main__':
 
 
     master_params = {
-        'EPOCHS': 1000000,
+        'EPOCHS': 1000010,
         'n_workers': 5,
         "actor_lr": 1e-4,
         "critic_lr": 1e-5,
@@ -383,15 +383,15 @@ if __name__ == '__main__':
     control_dict = {
         "RESET_TARGET_EVERY": 30,
         "RESET_ACTOR_EVERY": 8,
-        "SAVE_TO_PATH_EVERY": 25000,
+        "SAVE_TO_PATH_EVERY": 100000,
         "ACTOR_PATH": os.path.join(MODEL_PATH, "Actor_model.json"),
         "CRITIC_PATH": os.path.join(MODEL_PATH, "Critic_model.json"),
         "SLIDING_INIT_VALUE": 5000,
-        "CONTINUE_LEARNING": False,
+        "CONTINUE_LEARNING": True,
         "SLIDING_INCREMENTAL_VALUE": 0,
         "PLOT_TREND_EVERY": 2000,
         "TEST_VALUES": False,
-        "SAVE_BUFFERS_EVERY": 25000,
+        "SAVE_BUFFERS_EVERY": 100000,
         "RANDOM_EPISODES_EVERY": 10,
         "NUMBER_IF_RANDOM_EPISODES": 2
     }
